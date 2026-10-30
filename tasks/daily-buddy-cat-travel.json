@@ -1,0 +1,286 @@
+{
+  "schemaVersion": 3,
+  "id": "buddy-cat-travel-daily",
+  "name": "每日派猫猫旅行",
+  "description": "每天按服务端状态处理猫猫旅行：已到达则领取旅行积分，空闲且未达当日派遣上限时派猫猫出发；同一账号每日只处理一次，登录态失效时提示而不误报成功。",
+  "enabled": true,
+  "concurrency": {
+    "policy": "skip"
+  },
+  "trigger": {
+    "types": [
+      "pageReady",
+      "panelOpened"
+    ],
+    "oncePerNavigation": true,
+    "type": "manual"
+  },
+  "schedule": {
+    "type": "daily",
+    "time": "09:00"
+  },
+  "variables": {
+    "locationId": 1
+  },
+  "steps": [
+    {
+      "op": "time.now",
+      "format": "localDate",
+      "saveAs": "today"
+    },
+    {
+      "op": "account.forEach",
+      "accounts": "all",
+      "steps": [
+        {
+          "op": "state.get",
+          "key": "travelDoneOn",
+          "scope": "account",
+          "saveAs": "doneOn"
+        },
+        {
+          "op": "logic.if",
+          "condition": {
+            "left": "{{vars.doneOn}}",
+            "operator": "equals",
+            "right": "{{vars.today}}"
+          },
+          "then": [
+            {
+              "op": "log.write",
+              "message": "账号 {account} 今日已处理过猫猫旅行，跳过",
+              "params": {
+                "account": "{{account.uid}}"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "http.requestAsAccount",
+              "method": "GET",
+              "url": "https://www.workbuddy.cn/activity/growth/buddy/travel/status",
+              "timeoutMs": 15000,
+              "saveAs": "travel",
+              "headers": {
+                "X-User-Id": "{{account.uid}}"
+              }
+            },
+            {
+              "op": "logic.if",
+              "condition": {
+                "left": "{{vars.travel.ok}}",
+                "operator": "falsy"
+              },
+              "then": [
+                {
+                  "op": "log.write",
+                  "message": "旅行状态查询失败，HTTP {code}",
+                  "params": {
+                    "code": "{{vars.travel.status}}"
+                  }
+                },
+                {
+                  "op": "notify.toast",
+                  "level": "error",
+                  "message": "派猫猫旅行：读取旅行状态失败，请检查登录态",
+                  "duration": 6000
+                }
+              ],
+              "else": [
+                {
+                  "op": "log.write",
+                  "message": "旅行状态 {state}，今日已达上限 {limit}",
+                  "params": {
+                    "state": "{{vars.travel.json.data.state}}",
+                    "limit": "{{vars.travel.json.data.daily_limit_reached}}"
+                  }
+                },
+                {
+                  "op": "logic.if",
+                  "condition": {
+                    "left": "{{vars.travel.json.data.state}}",
+                    "operator": "equals",
+                    "right": "arrived"
+                  },
+                  "then": [
+                    {
+                      "op": "logic.catch",
+                      "steps": [
+                        {
+                          "op": "http.requestAsAccount",
+                          "method": "POST",
+                          "url": "https://www.workbuddy.cn/activity/growth/buddy/travel/claim",
+                          "body": {},
+                          "timeoutMs": 15000,
+                          "saveAs": "claim",
+                          "headers": {
+                            "X-User-Id": "{{account.uid}}"
+                          }
+                        },
+                        {
+                          "op": "logic.if",
+                          "condition": {
+                            "left": "{{vars.claim.ok}}",
+                            "operator": "truthy"
+                          },
+                          "then": [
+                            {
+                              "op": "log.write",
+                              "message": "旅行奖励领取响应 code={code}",
+                              "params": {
+                                "code": "{{vars.claim.json.code}}"
+                              }
+                            },
+                            {
+                              "op": "notify.toast",
+                              "level": "success",
+                              "message": "猫猫旅行归来，已领取旅行积分",
+                              "duration": 4200
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "log.write",
+                              "message": "旅行奖励领取未成功，HTTP {code}",
+                              "params": {
+                                "code": "{{vars.claim.status}}"
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "op": "logic.delay",
+                          "ms": 800
+                        }
+                      ],
+                      "onError": [
+                        {
+                          "op": "log.write",
+                          "message": "领取旅行奖励异常：{msg}",
+                          "params": {
+                            "msg": "{{vars.error.message}}"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "logic.if",
+                  "condition": {
+                    "left": "{{vars.travel.json.data.daily_limit_reached}}",
+                    "operator": "truthy"
+                  },
+                  "then": [
+                    {
+                      "op": "log.write",
+                      "message": "今日派遣次数已用满，不再派出",
+                      "params": {}
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "logic.if",
+                      "condition": {
+                        "left": "{{vars.travel.json.data.state}}",
+                        "operator": "notEquals",
+                        "right": "traveling"
+                      },
+                      "then": [
+                        {
+                          "op": "logic.catch",
+                          "steps": [
+                            {
+                              "op": "http.requestAsAccount",
+                              "method": "POST",
+                              "url": "https://www.workbuddy.cn/activity/growth/buddy/travel/depart",
+                              "body": {
+                                "location_id": "{{vars.locationId}}"
+                              },
+                              "timeoutMs": 15000,
+                              "saveAs": "depart",
+                              "headers": {
+                                "X-User-Id": "{{account.uid}}"
+                              }
+                            },
+                            {
+                              "op": "logic.assert",
+                              "condition": {
+                                "left": "{{vars.depart.json.code}}",
+                                "operator": "equals",
+                                "right": 0
+                              },
+                              "message": "派遣请求未被接受"
+                            },
+                            {
+                              "op": "log.write",
+                              "message": "已派出，前往 {place}",
+                              "params": {
+                                "place": "{{vars.depart.json.data.location.name}}"
+                              }
+                            },
+                            {
+                              "op": "notify.toast",
+                              "level": "success",
+                              "message": "派猫猫出发去旅行啦",
+                              "duration": 4200
+                            }
+                          ],
+                          "onError": [
+                            {
+                              "op": "log.write",
+                              "message": "派遣未成功：{msg}",
+                              "params": {
+                                "msg": "{{vars.error.message}}"
+                              }
+                            },
+                            {
+                              "op": "notify.toast",
+                              "level": "warning",
+                              "message": "派猫猫旅行：本次未能派出，稍后自动重试",
+                              "duration": 5000
+                            }
+                          ]
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "log.write",
+                          "message": "猫猫正在旅行中，无需再次派出",
+                          "params": {}
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "state.set",
+                  "key": "travelDoneOn",
+                  "scope": "account",
+                  "value": "{{vars.today}}"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "onSuccess": [],
+  "onFailure": [
+    {
+      "op": "log.write",
+      "message": "派猫猫旅行任务失败：{msg}",
+      "params": {
+        "msg": "{{vars.error.message}}"
+      }
+    },
+    {
+      "op": "notify.toast",
+      "level": "error",
+      "message": "派猫猫旅行任务失败，请查看运行日志",
+      "duration": 6000
+    }
+  ]
+}

@@ -7,6 +7,7 @@
 ## 任务列表
 
 - [逐账号例行发送（Hy3，跳过活跃地图今日已活跃的账号）](tasks/keep-accounts-active-hy3-skip-active-today.json)
+- [每日派猫猫旅行](tasks/daily-buddy-cat-travel.json)
 
 ## 任务说明
 
@@ -49,10 +50,41 @@
 自动化协议里**没有**"运行时关闭会话同步"的开关——`accountSwitch` 无条件读取自动复制规则，能力清单里也没有相关 op。
 想要更快，请到 WorkDaddy 的应用设置里处理上面两点（例如停用自动复制规则、临时停用切号触发的弹窗任务）。
 
+## 每日派猫猫旅行
+
+对应文件：`tasks/daily-buddy-cat-travel.json`
+
+每天先**问服务端**现在是什么状态，再决定做什么，不靠本地记忆猜：
+
+| 服务端 `data.state` | 任务动作 |
+|---|---|
+| `arrived`（猫猫已回来，待领取） | `POST .../travel/claim` 领取旅行积分 |
+| `idle` 等非 `traveling` 状态 | `POST .../travel/depart` 派出猫猫 |
+| `traveling`（正在路上） | 跳过，不重复派出 |
+
+另外 `data.daily_limit_reached` 为真时直接不再派出——当日上限以服务端为准，客户端不做假设。
+
+涉及的接口（`Bearer` 由 `http.requestAsAccount` 注入，`X-User-Id` 用 `{{account.uid}}` 显式补上）：
+
+- `GET  https://www.workbuddy.cn/activity/growth/buddy/travel/status`
+- `POST https://www.workbuddy.cn/activity/growth/buddy/travel/claim`（body `{}`）
+- `POST https://www.workbuddy.cn/activity/growth/buddy/travel/depart`（body `{"location_id": ...}`）
+
+行为要点：
+
+- **先领后派**：处于 `arrived` 时先领取；领取完如果当日额度还在，同一轮会继续尝试派出下一趟，不用等下一次调度。
+- **每日一次去重**：用账号级 `state`（`travelDoneOn` = 今日日期）标记，同一账号当天只处理一次，避免 `pageReady` / `panelOpened` 反复触发时重复请求、重复弹提示。
+- **领取与派出各自包在 `logic.catch` 里**：领取失败不影响派出；派出失败只提示"稍后自动重试"，不会把整轮判成失败。
+- **登录态失效不误报成功**：状态查询 `ok` 为假时只写日志并提示"请检查登录态"，不会进入派出分支。
+- **多账号**：`account.forEach` 覆盖全部账号，每账号独立判定、独立去重；全程纯 API 调用，不需要切换账号。
+- **目的地收益相同**：`location_id` 只影响路线与文案，不影响积分，默认 `1`，可在 `variables.locationId` 里换成 `1`–`4` 中任一目的地。
+
+触发方式：每日 `09:00` 定时为主，`pageReady` / `panelOpened` 作为兜底补跑；并发策略 `skip`，运行中不重入。
+
 ## 安装
 
 WorkDaddy → 自动化 → 公开任务 → 找到本任务 → 导入。导入后默认停用，请先确认行为再启用。
 
 ## 免责声明
 
-任务会切换本机已登录的账号并新建会话发送消息，请自行确认其行为符合你的预期。
+任务会切换本机已登录的账号并新建会话发送消息，或按账号调用 WorkBuddy 活动接口；请自行确认其行为符合你的预期。
