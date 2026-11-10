@@ -7,6 +7,7 @@
 ## 任务列表
 
 - [逐账号例行发送（Hy3，跳过活跃地图今日已活跃的账号）](tasks/keep-accounts-active-hy3-skip-active-today.json)
+- [成长计划到期日自动完成](tasks/growth-plan-expire-day-autocomplete.json)
 
 ## 任务说明
 
@@ -38,6 +39,25 @@
   （`session.wait` 的 `timeoutMs` 是上限，正常回复一到就立即返回）。
 - 触发方式为手动，不会自动运行；并发策略 `skip`，运行中不重入。
 
+**成长计划到期日自动完成**
+
+只按**年月日**判断，不看具体时间点。
+
+1. **取基准日**：`time.now(format: localDate)` 得到本地日期（如 `2026-11-09`）。
+2. **拉任务列表**：`http.requestAsAccount` 请求 `GET /v2/activity/growth/tasks`，用当前账号登录态，任务 JSON 里不含任何 Token / Cookie。
+3. **排除已完成**：`accept_status = claimed`，或 `progress.current >= progress.target` 的任务，**直接退出判断与统计**——不打印、不计数、不参与后续流程。
+4. **按日期判断**：未完成的任务里，看 `valid_end`（带时区的 ISO 字符串，如 `2026-11-13T23:59:00+08:00`）的**日期前缀**是否等于今天，用 `matches "^{{today}}"` 比对；相等即"到期日只剩最后一天"。
+5. **执行**：命中后先 `POST /v2/activity/growth/tasks/accept` 接取，再 `POST /activity/growth/tasks/{code}/claim` 领奖；领奖未通过的任务汇总标题，交办一个会话继续完成，并在运行日志里留下任务入口。
+
+行为要点：
+
+- **为什么是每天 00:05**：协议只有 `localDate` / `epochMs`，**没有日期加减也没有取整**，所以"明天"算不出来、只能精确判断"今天"。把执行点放在到期日开头，"到期日 = 今天"在语义上就等于"还剩整整一天"。
+- **为什么"已完成"要用嵌套 if**：条件运算符没有 `OR`，`claimed` 与"进度达标"只能写成两层 `logic.if`，`then: []` 即丢弃。
+- `progress` 可能为 `null`，此时 `gte` 判为假、按未完成处理，不会漏判；而成长任务状态会随平台周期自行重置，所以每次都只认接口当次返回，不缓存"曾领过"。
+- `valid_end` 为 `null` 是常驻任务，直接跳过。
+- 并发策略 `skip`，运行中不重入；单账号失败用 `logic.catch` 兜住，只写日志不中断。
+- **需要自动化协议 V3**（`schemaVersion: 3`）。
+
 ## 关于执行速度（重要）
 
 本任务能省的只有"少切号"和"别被单个账号拖住"，**切号本身的固定开销不在任务控制范围内**，主要是两件事：
@@ -51,7 +71,7 @@
 
 ## 安装
 
-WorkDaddy → 自动化 → 公开任务 → 找到本任务 → 导入。导入后默认停用，请先确认行为再启用。
+WorkDaddy → 自动化 → 公开任务 → 找到目标任务 → 导入。导入后默认停用，请先确认行为再启用。
 
 ## 免责声明
 

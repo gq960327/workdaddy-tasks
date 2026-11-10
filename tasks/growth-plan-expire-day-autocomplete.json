@@ -1,0 +1,387 @@
+{
+  "schemaVersion": 3,
+  "id": "growth-plan-expire-day-autocomplete",
+  "name": "成长计划到期日自动完成",
+  "description": "每天 00:05 查询成长计划任务列表。已完成的（accept_status=claimed 或进度已达标）直接退出判断与统计，不再打印、不再计数；只对未完成任务按年月日判断：valid_end 日期正好等于今天（只剩最后一天）的，自动接取并领奖；领不到的汇总后交给 WorkBuddy 会话继续处理。无到期日的常驻任务跳过。",
+  "enabled": false,
+  "concurrency": {
+    "policy": "skip"
+  },
+  "trigger": {
+    "type": "manual",
+    "types": [],
+    "oncePerNavigation": true
+  },
+  "schedule": {
+    "type": "daily",
+    "time": "00:05"
+  },
+  "variables": {
+    "today": "",
+    "datedCount": 0,
+    "dueCount": 0,
+    "claimedCount": 0,
+    "pendingCount": 0,
+    "pendingList": "",
+    "hadError": false
+  },
+  "steps": [
+    {
+      "op": "time.now",
+      "format": "localDate",
+      "saveAs": "today"
+    },
+    {
+      "op": "log.write",
+      "message": "判定基准日期（只看年月日）{d}",
+      "params": {
+        "d": "{{vars.today}}"
+      }
+    },
+    {
+      "op": "account.forEach",
+      "accounts": "all",
+      "steps": [
+        {
+          "op": "logic.delay",
+          "ms": 1200
+        },
+        {
+          "op": "logic.catch",
+          "steps": [
+            {
+              "op": "account.getCurrent",
+              "saveAs": "current"
+            },
+            {
+              "op": "http.requestAsAccount",
+              "method": "GET",
+              "url": "https://www.workbuddy.cn/v2/activity/growth/tasks",
+              "timeoutMs": 15000,
+              "throwOnHttpError": true,
+              "saveAs": "taskList"
+            },
+            {
+              "op": "logic.assert",
+              "condition": {
+                "left": "{{vars.taskList.json.code}}",
+                "operator": "equals",
+                "right": 0
+              },
+              "message": "成长任务列表查询失败"
+            },
+            {
+              "op": "logic.forEach",
+              "items": "{{vars.taskList.json.data.tasks}}",
+              "steps": [
+                {
+                  "op": "logic.if",
+                  "condition": {
+                    "left": "{{vars.item.accept_status}}",
+                    "operator": "equals",
+                    "right": "claimed"
+                  },
+                  "then": [],
+                  "else": [
+                    {
+                      "op": "logic.if",
+                      "condition": {
+                        "left": "{{vars.item.progress.current}}",
+                        "operator": "gte",
+                        "right": "{{vars.item.progress.target}}"
+                      },
+                      "then": [],
+                      "else": [
+                        {
+                          "op": "logic.if",
+                          "condition": {
+                            "left": "{{vars.item.valid_end}}",
+                            "operator": "truthy"
+                          },
+                          "then": [
+                            {
+                              "op": "value.number",
+                              "operator": "add",
+                              "values": [
+                                "{{vars.datedCount}}",
+                                1
+                              ],
+                              "min": 0,
+                              "saveAs": "datedCount"
+                            },
+                            {
+                              "op": "log.write",
+                              "message": "未完成任务 {code} 到期日 {end}，基准日 {today}",
+                              "params": {
+                                "code": "{{vars.item.task_code}}",
+                                "end": "{{vars.item.valid_end}}",
+                                "today": "{{vars.today}}"
+                              }
+                            },
+                            {
+                              "op": "logic.if",
+                              "condition": {
+                                "left": "{{vars.item.valid_end}}",
+                                "operator": "matches",
+                                "right": "^{{vars.today}}"
+                              },
+                              "then": [
+                                {
+                                  "op": "value.number",
+                                  "operator": "add",
+                                  "values": [
+                                    "{{vars.dueCount}}",
+                                    1
+                                  ],
+                                  "min": 0,
+                                  "saveAs": "dueCount"
+                                },
+                                {
+                                  "op": "log.write",
+                                  "message": "任务 {code} 到期日就是今天，只剩最后一天",
+                                  "params": {
+                                    "code": "{{vars.item.task_code}}",
+                                    "title": "{{vars.item.title}}"
+                                  }
+                                },
+                                {
+                                  "op": "logic.catch",
+                                  "steps": [
+                                    {
+                                      "op": "http.requestAsAccount",
+                                      "method": "POST",
+                                      "url": "https://www.workbuddy.cn/v2/activity/growth/tasks/accept",
+                                      "body": {
+                                        "task_codes": [
+                                          "{{vars.item.task_code}}"
+                                        ]
+                                      },
+                                      "timeoutMs": 15000,
+                                      "saveAs": "acceptResult"
+                                    }
+                                  ],
+                                  "onError": [
+                                    {
+                                      "op": "log.write",
+                                      "message": "任务 {code} 接取接口未成功，继续尝试领取",
+                                      "params": {
+                                        "code": "{{vars.item.task_code}}"
+                                      }
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "logic.delay",
+                                  "ms": 600
+                                },
+                                {
+                                  "op": "logic.catch",
+                                  "steps": [
+                                    {
+                                      "op": "http.requestAsAccount",
+                                      "method": "POST",
+                                      "url": "https://www.workbuddy.cn/activity/growth/tasks/{{vars.item.task_code}}/claim",
+                                      "body": {},
+                                      "timeoutMs": 15000,
+                                      "saveAs": "claimResult"
+                                    }
+                                  ],
+                                  "onError": [
+                                    {
+                                      "op": "log.write",
+                                      "message": "任务 {code} 领取接口未成功",
+                                      "params": {
+                                        "code": "{{vars.item.task_code}}"
+                                      }
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "logic.if",
+                                  "condition": {
+                                    "left": "{{vars.claimResult.json.code}}",
+                                    "operator": "equals",
+                                    "right": 0
+                                  },
+                                  "then": [
+                                    {
+                                      "op": "value.number",
+                                      "operator": "add",
+                                      "values": [
+                                        "{{vars.claimedCount}}",
+                                        1
+                                      ],
+                                      "min": 0,
+                                      "saveAs": "claimedCount"
+                                    },
+                                    {
+                                      "op": "log.write",
+                                      "message": "任务 {code} 已完成并领奖，积分 {credit}，能量 {energy}",
+                                      "params": {
+                                        "code": "{{vars.item.task_code}}",
+                                        "credit": "{{vars.claimResult.json.data.credit}}",
+                                        "energy": "{{vars.claimResult.json.data.energy}}"
+                                      }
+                                    },
+                                    {
+                                      "op": "notify.toast",
+                                      "level": "success",
+                                      "message": "成长计划：{{vars.item.title}} 已完成并领奖",
+                                      "duration": 5000
+                                    }
+                                  ],
+                                  "else": [
+                                    {
+                                      "op": "value.number",
+                                      "operator": "add",
+                                      "values": [
+                                        "{{vars.pendingCount}}",
+                                        1
+                                      ],
+                                      "min": 0,
+                                      "saveAs": "pendingCount"
+                                    },
+                                    {
+                                      "op": "vars.set",
+                                      "key": "pendingList",
+                                      "value": "{{vars.pendingList}}{{vars.item.title}}、"
+                                    },
+                                    {
+                                      "op": "log.write",
+                                      "message": "任务 {code} 需要人工完成，入口 {url}，原因 {msg}",
+                                      "params": {
+                                        "code": "{{vars.item.task_code}}",
+                                        "url": "{{vars.item.jump_url}}",
+                                        "msg": "{{vars.claimResult.json.msg}}"
+                                      }
+                                    }
+                                  ]
+                                }
+                              ],
+                              "else": [
+                                {
+                                  "op": "log.write",
+                                  "message": "任务 {code} 到期日不是今天，不处理",
+                                  "params": {
+                                    "code": "{{vars.item.task_code}}"
+                                  }
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "onError": [
+            {
+              "op": "log.write",
+              "message": "账号 {account} 检查失败：{reason}",
+              "params": {
+                "account": "{{account.uid}}",
+                "reason": "{{vars.error.message}}"
+              }
+            },
+            {
+              "op": "vars.set",
+              "key": "hadError",
+              "value": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "log.write",
+      "message": "范围汇总（已完成任务不计入）：未完成且带到期日 {dated} 条，其中到期日等于今天 {due} 条，已领 {ok} 条，待人工 {left} 条",
+      "params": {
+        "dated": "{{vars.datedCount}}",
+        "due": "{{vars.dueCount}}",
+        "ok": "{{vars.claimedCount}}",
+        "left": "{{vars.pendingCount}}"
+      }
+    },
+    {
+      "op": "logic.if",
+      "condition": {
+        "left": "{{vars.pendingCount}}",
+        "operator": "gt",
+        "right": 0
+      },
+      "then": [
+        {
+          "op": "logic.catch",
+          "steps": [
+            {
+              "op": "session.create",
+              "message": "成长计划里有未完成任务今天到期（只剩最后一天），需要你帮我完成：{{vars.pendingList}}。请按每个任务的要求把对应操作做掉，然后回成长计划页面领取奖励；做完回报每条任务的结果。",
+              "saveAs": "receipt"
+            },
+            {
+              "op": "session.wait",
+              "receipt": "{{vars.receipt}}",
+              "timeoutMs": 240000
+            }
+          ],
+          "onError": [
+            {
+              "op": "log.write",
+              "message": "会话交办失败：{reason}",
+              "params": {
+                "reason": "{{vars.error.message}}"
+              }
+            }
+          ]
+        }
+      ],
+      "else": [
+        {
+          "op": "logic.if",
+          "condition": {
+            "left": "{{vars.dueCount}}",
+            "operator": "equals",
+            "right": 0
+          },
+          "then": [
+            {
+              "op": "log.write",
+              "message": "今天没有未完成任务在到期",
+              "params": {}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "notify.toast",
+      "level": "info",
+      "message": "成长计划：到期 {{vars.dueCount}} 条，已领 {{vars.claimedCount}} 条，待人工 {{vars.pendingCount}} 条",
+      "duration": 6000
+    },
+    {
+      "op": "state.set",
+      "key": "lastRun",
+      "value": "{{runtime.time.iso}}"
+    }
+  ],
+  "onSuccess": [
+    {
+      "op": "notify.toast",
+      "level": "success",
+      "message": "成长计划到期日检查完成",
+      "duration": 4200
+    }
+  ],
+  "onFailure": [
+    {
+      "op": "notify.toast",
+      "level": "error",
+      "message": "成长计划检查异常，详见运行日志",
+      "duration": 6000
+    }
+  ]
+}
